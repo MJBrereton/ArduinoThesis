@@ -1,56 +1,49 @@
-/*
-  Web client
+// Arduino Thesis Project
+// Michael Brereton 2021
+// This program incorporates some code from the Arduino examples https://www.arduino.cc/en/Tutorial/LibraryExamples/WiFiWebClient
+// This program also incorporates some code from the accelerometer supplier https://wiki.dfrobot.com/Triple_Axis_Accelerometer_BMA220_Tiny__SKU_SEN0168
 
- This sketch connects to a website (http://www.google.com)
- using the WiFi module.
-
- This example is written for a network using WPA encryption. For
- WEP or WPA, change the WiFi.begin() call accordingly.
-
- This example is written for a network using WPA encryption. For
- WEP or WPA, change the WiFi.begin() call accordingly.
-
- Circuit:
- * Board with NINA module (Arduino MKR WiFi 1010, MKR VIDOR 4000 and UNO WiFi Rev.2)
-
- created 13 July 2010
- by dlf (Metodo2 srl)
- modified 31 May 2012
- by Tom Igoe
- */
-
-
+#include <Wire.h>
 #include <SPI.h>
 #include <WiFiNINA.h>
 #include "DHT.h"
 #include "arduino_secrets.h" 
 
-#define DHTPIN 4     // Digital pin connected to the DHT sensor
-#define DHTTYPE DHT11   // DHT 11
+// pin for DHT sensor
+#define DHTPIN 4
+// pin for magnetic switch
+#define MAG_SWITCH_PIN 2
+// server port number
+#define PORT_NUM 12100
+
+// variables for accelerometer
+byte Version[3];
+int8_t x_data;
+int8_t y_data;
+int8_t z_data;
+byte range = 0x01;
+float divisor = 16;
+float x,y,z, maxAccel;
+float maxAccels[20];
 
 // hide these in arduino secrets
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char pass[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
-// int keyIndex = 0;            // your network key index number (needed only for WEP)
+char ssid[] = SECRET_SSID;        // network SSID
+char pass[] = SECRET_PASS;    // network password 
 
 int status = WL_IDLE_STATUS;
-// if you don't want to use DNS (and reduce your sketch size)
-// use the numeric IP instead of the name for the server:
-IPAddress server(192, 168, 1, 2);  // numeric IP for Google (no DNS)
-//char server[] = "www.google.com";    // name address for Google (using DNS)
+// server IP address
+IPAddress server(192, 168, 1, 2);
 
-// Initialize the Ethernet client library
-// with the IP address and port of the server
-// that you want to connect to (port 80 is default for HTTP):
+// Initialize the WIFI client library
 WiFiClient client;
 
-DHT dht(DHTPIN, DHTTYPE);
+// initialise DHT11 class
+DHT dht(DHTPIN, DHT11);
 
 void setup() {
-  //Initialize serial and wait for port to open:
   Serial.begin(9600);
   while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB port only
+    ;
   }
 
   // check for the WiFi module:
@@ -58,11 +51,6 @@ void setup() {
     Serial.println("Communication with WiFi module failed!");
     // don't continue
     while (true);
-  }
-
-  String fv = WiFi.firmwareVersion();
-  if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
-    Serial.println("Please upgrade the firmware");
   }
 
   // attempt to connect to WiFi network:
@@ -80,19 +68,60 @@ void setup() {
 
   Serial.println("\nStarting connection to server...");
   // if you get a connection, report back via serial:
-  if (client.connect(server, 8080)) {
+  if (client.connect(server, PORT_NUM)) {
     Serial.println("connected to server");
-    // Make a request:
-    client.println("client hello");
   }
 
   // start dht sensor
   dht.begin();
+
+  // set magnetic switch pin to input mode
+  pinMode(MAG_SWITCH_PIN, INPUT); 
+
+  Wire.begin();
+  Wire.beginTransmission(0x0A); // address of the accelerometer
+  // range settings
+  Wire.write(0x22); // register address
+  Wire.write(range); //can be set from 00 to 04 depending on mode
+  // low pass filter
+  Wire.write(0x20); // register address
+  Wire.write(0x05); 
+  Wire.endTransmission();
 }
 
 void loop() {
   // read humidity from sensor
   int humidity = dht.readHumidity();
+  bool doorOpen = false;
+  float maxValue = maxAccels[0];
+
+  switch(range)  //change the data dealing method based on the range
+  {
+    case 0x00:divisor=16;  break;
+    case 0x01:divisor=8;  break;
+    case 0x02:divisor=4;  break;
+    case 0x03:divisor=2;  break;
+    default: Serial.println("range setting is Wrong,range:from 0to 3.Please check!");while(1);
+  }
+
+  byte i = 0;
+  while (i < 20) {
+    maxAccels[i] = AccelerometerInit();
+    delay(100);
+    i++;
+  }
+
+  for(byte i = 0; i < 20; i++) {
+      if(maxAccels[i] > maxValue) {
+          maxValue = maxAccels[i];
+      }
+  }
+  
+  if (digitalRead(MAG_SWITCH_PIN) == HIGH) {
+    doorOpen = false;
+  } else {
+    doorOpen = true;
+  }
 
   // restart loop early if sensor read fails
   if (isnan(humidity)) {
@@ -105,25 +134,34 @@ void loop() {
   if (!client.connected()) {
     Serial.println("disconnected from server.");
     Serial.println("attempting to reconnect");
-    if (client.connect(server, 8080)) {
+    if (client.connect(server, PORT_NUM)) {
       Serial.println("reconnected to server");
-      // Make a request:
-      client.println("hello again");
     }
   }
+
+
+  Serial.print("humidity = ");
+  Serial.print(humidity);
+  Serial.print(" doorOpen = ");
+  Serial.println(doorOpen);
+  Serial.print(" acceleration = ");
+  Serial.println(maxValue);
   
   // if there are incoming bytes available
   // from the server, read them and print them:
   // prints initial server response then proceeds to continue messaging server and printing further responses
   if (client.connected()) {
-    client.println(humidity);
+
+    client.print(humidity);
+    client.print(doorOpen);
+    client.print(maxValue);
+    client.print("~");
     while (client.available()) {
       char c = client.read();
       Serial.print(c);
     };
   }
   
-  delay(2000);
 }
 
 
@@ -142,4 +180,42 @@ void printWifiStatus() {
   Serial.print("signal strength (RSSI):");
   Serial.print(rssi);
   Serial.println(" dBm");
+}
+
+float AccelerometerInit() {
+  Wire.beginTransmission(0x0A);
+  // reset the accelerometer
+  Wire.write(0x04); 
+  Wire.endTransmission();
+  Wire.requestFrom(0x0A,1);
+  while(Wire.available()) {
+    Version[0] = Wire.read();
+  }
+  x_data=(int8_t)Version[0]>>2;
+
+  Wire.beginTransmission(0x0A);
+  // reset the accelerometer
+  Wire.write(0x06); // Y data
+  Wire.endTransmission();
+  Wire.requestFrom(0x0A,1);
+  while(Wire.available()) {
+    Version[1] = Wire.read();
+  }
+  y_data=(int8_t)Version[1]>>2;
+
+  Wire.beginTransmission(0x0A);
+  // reset the accelerometer
+  Wire.write(0x08); // Y data
+  Wire.endTransmission();
+  Wire.requestFrom(0x0A,1);
+  while(Wire.available()) {
+    Version[2] = Wire.read();
+  }
+   z_data=(int8_t)Version[2]>>2;
+
+   x=(float)x_data/divisor;
+   y=(float)y_data/divisor;
+   z=(float)z_data/divisor;
+
+   return sqrt(sq(x)+sq(y)+sq(z));
 }
